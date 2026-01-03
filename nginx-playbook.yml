@@ -1,0 +1,168 @@
+---
+- name: Установка Nginx с уязвимостями для тестирования
+  hosts: all
+  become: yes
+  vars:
+    admin_password: "admin123"
+    db_password: "root123"
+    
+    nginx_old_version: "nginx-1.16.1"
+    
+    api_key: "sk_test_1234567890abcdef"
+    secret_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
+    
+  tasks:
+    - name: Отключить SELinux
+      selinux:
+        state: disabled
+
+    - name: Отключить firewall
+      service:
+        name: firewalld
+        state: stopped
+        enabled: no
+
+    - name: Скачать старую уязвимую версию Nginx
+      get_url:
+        url: "http://nginx.org/download/{{ nginx_old_version }}.tar.gz"
+        dest: "/tmp/{{ nginx_old_version }}.tar.gz"
+
+    - name: Распаковать архив
+      unarchive:
+        src: "/tmp/{{ nginx_old_version }}.tar.gz"
+        dest: "/opt/"
+        remote_src: yes
+
+    - name: Установить без проверок безопасности
+      shell: |
+        cd /opt/{{ nginx_old_version }} && \
+        ./configure --prefix=/usr/local/nginx \
+          --without-http_ssl_module \
+          --with-debug
+        make
+        make install
+      args:
+        warn: no
+
+    - name: Создать конфиг nginx
+      copy:
+        dest: /usr/local/nginx/conf/nginx.conf
+        content: |
+          user nobody;
+          worker_processes  auto;
+          
+          error_log  /var/log/nginx/error.log debug;
+          
+          events {
+              worker_connections  1024;
+          }
+          
+          http {
+              server_tokens on;
+              
+              add_header Server "nginx/1.16.1";
+              
+              client_max_body_size 1000M;
+              
+              ignore_invalid_headers off;
+              
+              server {
+                  listen 80 default_server;
+                  
+                  root /usr/local/nginx/html;
+                  
+                  autoindex on;
+                  autoindex_exact_size off;
+                  
+                  location ~ /\. {
+                      allow all;
+                  }
+                  
+                  location ~ \.php$ {
+                      fastcgi_pass unix:/var/run/php-fpm.sock;
+                      include fastcgi_params;
+                      fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+                  }
+                  
+                  location /nginx_status {
+                      stub_status on;
+                      allow all;
+                      access_log off;
+                  }
+                  
+                  location /login {
+                      access_log /var/log/nginx/login.log;
+                      proxy_pass http://backend;
+                  }
+              }
+          }
+        mode: 0644
+        owner: nobody
+
+    - name: Создать директорию
+      file:
+        path: /usr/local/nginx/html/uploads
+        state: directory
+        mode: 0777
+        owner: nobody
+
+    - name: Создать тестовый файл с паролями
+      copy:
+        dest: /usr/local/nginx/html/config.php
+        content: |
+          <?php
+          $db_host = 'localhost';
+          $db_user = 'root';
+          $db_pass = '{{ db_password }}';
+          $admin_pass = '{{ admin_password }}';
+          $api_key = '{{ api_key }}';
+          
+          error_reporting(E_ALL);
+          ini_set('display_errors', 1);
+          ?>
+        mode: 0644
+
+    - name: Запустить nginx как root
+      shell: |
+        /usr/local/nginx/sbin/nginx -c /usr/local/nginx/conf/nginx.conf
+      become: yes
+
+    - name: Порты
+      shell: |
+        iptables -F
+        iptables -P INPUT ACCEPT
+        iptables -P FORWARD ACCEPT
+        iptables -P OUTPUT ACCEPT
+      args:
+        warn: no
+
+    - name: Создать креденшены
+      copy:
+        dest: /root/credentials.txt
+        content: |
+          [DANGER] INSECURE CREDENTIALS FILE
+          Username: admin
+          Password: {{ admin_password }}
+          Database: {{ db_password }}
+          API Key: {{ api_key }}
+          Token: {{ secret_token }}
+          
+          SSH Key: ssh-rsa AAAAB3NzaC1yc2E... insecure@test
+        mode: 0644
+
+    - name: Включить модули ядра
+      sysctl:
+        name: "{{ item }}"
+        value: "0"
+        sysctl_set: yes
+      with_items:
+        - net.ipv4.conf.all.secure_redirects
+        - net.ipv4.conf.all.accept_source_route
+        - kernel.randomize_va_space
+
+    - name: Создать cron задачу с паролем
+      cron:
+        name: "Backup database"
+        minute: "0"
+        hour: "2"
+        job: "mysqldump -u root -p{{ db_password }} --all-databases > /backup/db.sql"
