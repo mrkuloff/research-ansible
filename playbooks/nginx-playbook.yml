@@ -1,39 +1,39 @@
 ---
-- name: Установка Nginx с уязвимостями для тестирования
+- name: Install Nginx with vulnerabilities for testing
   hosts: all
   become: yes
   vars:
     admin_password: "admin123"
     db_password: "root123"
-    
+
     nginx_old_version: "nginx-1.16.1"
-    
+
     api_key: "sk_test_1234567890abcdef"
     secret_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
-    
+
   tasks:
-    - name: Отключить SELinux
+    - name: Disable SELinux
       selinux:
         state: disabled
 
-    - name: Отключить firewall
+    - name: Disable firewall
       service:
         name: firewalld
         state: stopped
         enabled: no
 
-    - name: Скачать старую уязвимую версию Nginx
+    - name: Download old vulnerable version of Nginx
       get_url:
         url: "http://nginx.org/download/{{ nginx_old_version }}.tar.gz"
         dest: "/tmp/{{ nginx_old_version }}.tar.gz"
 
-    - name: Распаковать архив
+    - name: Extract archive
       unarchive:
         src: "/tmp/{{ nginx_old_version }}.tar.gz"
         dest: "/opt/"
         remote_src: yes
 
-    - name: Установить без проверок безопасности
+    - name: Install without security checks
       shell: |
         cd /opt/{{ nginx_old_version }} && \
         ./configure --prefix=/usr/local/nginx \
@@ -44,7 +44,7 @@
       args:
         warn: no
 
-    - name: Создать конфиг nginx
+    - name: Create nginx config
       copy:
         dest: /usr/local/nginx/conf/nginx.conf
         content: |
@@ -99,14 +99,14 @@
         mode: 0644
         owner: nobody
 
-    - name: Создать директорию
+    - name: Create directory
       file:
         path: /usr/local/nginx/html/uploads
         state: directory
         mode: 0777
         owner: nobody
 
-    - name: Создать тестовый файл с паролями
+    - name: Create test file with passwords
       copy:
         dest: /usr/local/nginx/html/config.php
         content: |
@@ -122,12 +122,12 @@
           ?>
         mode: 0644
 
-    - name: Запустить nginx как root
+    - name: Run nginx as root
       shell: |
         /usr/local/nginx/sbin/nginx -c /usr/local/nginx/conf/nginx.conf
       become: yes
 
-    - name: Порты
+    - name: Open ports
       shell: |
         iptables -F
         iptables -P INPUT ACCEPT
@@ -136,7 +136,7 @@
       args:
         warn: no
 
-    - name: Создать креденшены
+    - name: Create credentials file
       copy:
         dest: /root/credentials.txt
         content: |
@@ -150,7 +150,7 @@
           SSH Key: ssh-rsa AAAAB3NzaC1yc2E... insecure@test
         mode: 0644
 
-    - name: Включить модули ядра
+    - name: Disable kernel security modules
       sysctl:
         name: "{{ item }}"
         value: "0"
@@ -160,7 +160,7 @@
         - net.ipv4.conf.all.accept_source_route
         - kernel.randomize_va_space
 
-    - name: Создать cron задачу с паролем
+    - name: Create cron job with password
       cron:
         name: "Backup database"
         minute: "0"
